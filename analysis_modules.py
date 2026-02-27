@@ -150,24 +150,30 @@ class TranscriptionAnalyzer:
     def transcribe(self, audio_path: str) -> Tuple[str, List[Dict]]:
         """Transcribe with word-level timestamps"""
         logger.info("Transcribing with Faster-Whisper...")
-        
-        segments, info = self.model.transcribe(audio_path, word_level=True)
-        
+
+        segments, info = self.model.transcribe(
+            audio_path,
+            word_timestamps=True
+        )
+
         words = []
-        full_text = ""
-        
+        full_text_parts = []
+
         for segment in segments:
-            for word in segment.words:
-                words.append({
-                    "word": word.word,
-                    "start": float(word.start),
-                    "end": float(word.end),
-                    "confidence": float(word.confidence)
-                })
-                full_text += word.word + " "
-        
+            if segment.words:
+                for word in segment.words:
+                    words.append({
+                        "word": word.word.strip(),
+                        "start": float(word.start),
+                        "end": float(word.end),
+                        "confidence": float(getattr(word, "probability", getattr(word, "confidence", 0.0)))
+                    })
+                    full_text_parts.append(word.word.strip())
+
+        full_text = " ".join(full_text_parts)
+
         logger.info(f"Transcribed {len(words)} words")
-        return full_text.strip(), words
+        return full_text, words
 
 class SceneDetector:
     """Detect scene changes in video"""
