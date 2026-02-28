@@ -24,7 +24,8 @@ if uploaded_file:
         analysis = analyzer.analyze_full(video_path)
         
         builder = EditPlanBuilder(analysis, video_path)
-        builder.apply_keep_segments_rule()
+        builder.apply_top_highlights_rule(max_segments=8)
+        builder.apply_motion_emphasis_rule()
         plan = builder.get_plan()
         
         renderer = FFmpegRenderer()

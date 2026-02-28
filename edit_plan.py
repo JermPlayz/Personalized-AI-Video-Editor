@@ -134,3 +134,22 @@ class EditPlanBuilder:
     
     def get_plan(self) -> EditPlan:
         return self.plan
+    
+    def apply_top_highlights_rule(self, max_segments=10):
+        segments = sorted(
+            self.analysis.get("segments", []),
+            key=lambda x: x.get("highlight_score", 0),
+            reverse=True
+        )[:max_segments]
+
+        for seg in segments:
+            edit_segment = EditSegment(
+                src=self.video_path,
+                in_time=seg["start"],
+                out_time=seg["end"],
+                video=VideoTransform(),
+                audio=AudioTransform(),
+                reason=f"highlight_score={seg['highlight_score']:.2f}"
+            )
+
+            self.plan.timeline.append(edit_segment)
