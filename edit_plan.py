@@ -1,17 +1,18 @@
 """
 Step 4.3 — Edit Decision Language (EDL)
-Defines what edits to make in a standardized JSON format
+Builds edit plans from analysis
 """
 
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional
 import json
+import numpy as np
 
 @dataclass
 class VideoTransform:
-    crop: str = "9:16_center"  # "9:16_center", "9:16_center_face", "16:9", etc
+    crop: str = "9:16_center"
     zoom: float = 1.0
-    zoom_duration: Optional[float] = None  # If animating zoom
+    zoom_duration: Optional[float] = None
     rotation: float = 0
 
 @dataclass
@@ -22,37 +23,27 @@ class AudioTransform:
 
 @dataclass
 class EditSegment:
-    src: str  # Source video file
-    in_time: float  # Start time in source (seconds)
-    out_time: float  # End time in source (seconds)
+    src: str
+    in_time: float
+    out_time: float
     video: VideoTransform
     audio: AudioTransform
-    reason: Optional[str] = None  # Why we kept this segment
-
-@dataclass
-class CaptionStyle:
-    font: str = "Arial"
-    size: int = 64
-    stroke: int = 3
-    color: str = "#FFFFFF"
-    position: str = "bottom_center"  # "top_center", "bottom_center", "bottom_left"
-    background: bool = False
+    reason: Optional[str] = None
 
 @dataclass
 class MusicTrack:
     src: str
-    start: float  # When in timeline to start
-    duck_db: float = -12  # How much to lower voice when music plays
+    start: float
+    duck_db: float = -12
 
 @dataclass
 class EditPlan:
-    meta: Dict  # fps, resolution, etc
+    meta: Dict
     timeline: List[EditSegment]
-    captions: Dict  # burn_in, style
+    captions: Dict
     music: List[MusicTrack]
     
     def to_json(self, path: str):
-        """Save edit plan as JSON"""
         data = {
             "meta": self.meta,
             "timeline": [asdict(seg) for seg in self.timeline],
@@ -64,7 +55,6 @@ class EditPlan:
     
     @staticmethod
     def from_json(path: str) -> "EditPlan":
-        """Load edit plan from JSON"""
         with open(path, "r") as f:
             data = json.load(f)
         
@@ -79,11 +69,12 @@ class EditPlan:
         )
 
 class EditPlanBuilder:
-    """Build edit plans from analysis and rules"""
+    """Build edit plans from analysis"""
     
-    def __init__(self, analysis: Dict, video_path: str):
+    def __init__(self, analysis: Dict, video_path: str, padding: float = 0.15):
         self.analysis = analysis
         self.video_path = video_path
+        self.padding = padding
         self.plan = EditPlan(
             meta={"fps": 30, "resolution": "1080x1920"},
             timeline=[],
@@ -96,72 +87,50 @@ class EditPlanBuilder:
             music=[]
         )
     
-    def apply_silence_removal_rule(self, silence_threshold_s: float = 0.5):
-        """Remove segments that are pure silence"""
-        silences = self.analysis["audio"]["silences"]
+    def apply_keep_segments_rule(self, min_segment_duration: float = 0.5):
+        """
+        Apply the keep_segments directly from transcription analysis.
+        This uses the PROVEN pause detection logic.
+        """
+        keep_segments = self.analysis.get("keep_segments", [])
         
-        # Mark all times that are silence
-        silence_ranges = [(s["start"], s["end"]) for s in silences 
-                         if s["duration"] > silence_threshold_s]
-        
-        # Build segments avoiding silences
-        words = self.analysis["transcription"]["words"]
-        if not words:
+        if not keep_segments:
             return
         
-        current_segment_start = words[0]["start"]
-        
-        for i, word in enumerate(words):
-            in_silence = any(s_start <= word["start"] < s_end 
-                           for s_start, s_end in silence_ranges)
+        for seg in keep_segments:
+            # Skip very short segments
+            if seg["duration"] < min_segment_duration:
+                continue
             
-            if in_silence and current_segment_start is not None:
-                # End segment
-                segment = EditSegment(
-                    src=self.video_path,
-                    in_time=current_segment_start,
-                    out_time=word["start"],
-                    video=VideoTransform(),
-                    audio=AudioTransform(),
-                    reason="silence_removed"
-                )
-                self.plan.timeline.append(segment)
-                current_segment_start = None
-            elif not in_silence and current_segment_start is None:
-                current_segment_start = word["start"]
-        
-        # Add final segment
-        if current_segment_start is not None:
-            segment = EditSegment(
+            # Add padding
+            start = max(0, seg["start"] - self.padding)
+            end = seg["end"] + self.padding
+            
+            edit_segment = EditSegment(
                 src=self.video_path,
-                in_time=current_segment_start,
-                out_time=words[-1]["end"],
+                in_time=start,
+                out_time=end,
                 video=VideoTransform(),
                 audio=AudioTransform(),
-                reason="silence_removed"
+                reason=f"keep_segment: {seg['text'][:30]}"
             )
-            self.plan.timeline.append(segment)
-    
-    def apply_scene_cut_rule(self):
-        """Use scene cuts as natural breakpoints"""
-        scenes = self.analysis["scenes"]
-        # Implementation: use scene cuts as segment boundaries
-        pass
+            
+            self.plan.timeline.append(edit_segment)
     
     def apply_motion_emphasis_rule(self, motion_threshold: float = 5.0):
-        """Add zoom/punch-in on high-motion segments"""
-        motion_data = self.analysis["motion"]
+        """Add zoom on high-motion segments"""
+        motion_data = self.analysis.get("motion", [])
         
         for seg in self.plan.timeline:
             segment_motion = [m for m in motion_data 
                             if seg.in_time <= m["timestamp"] <= seg.out_time]
             
-            avg_motion = np.mean([m["motion_score"] for m in segment_motion]) if segment_motion else 0
-            
-            if avg_motion > motion_threshold:
-                seg.video.zoom = 1.08  # Subtle punch-in
-                seg.video.zoom_duration = seg.out_time - seg.in_time
+            if segment_motion:
+                avg_motion = np.mean([m["motion_score"] for m in segment_motion])
+                
+                if avg_motion > motion_threshold:
+                    seg.video.zoom = 1.08
+                    seg.video.zoom_duration = seg.out_time - seg.in_time
     
     def get_plan(self) -> EditPlan:
-        """Return the current edit plan"""
         return self.plan
